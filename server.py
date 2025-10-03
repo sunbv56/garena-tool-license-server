@@ -23,11 +23,14 @@ class License(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     license_key = db.Column(db.String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
     hwid = db.Column(db.String(100), unique=False, nullable=True)
-    # Thêm cột expires_at, nullable=True nghĩa là key có thể không có ngày hết hạn (vĩnh viễn)
+    
+    # === KIỂM TRA 2 DÒNG NÀY ===
     expires_at = db.Column(db.DateTime, nullable=True, default=None)
+    customer_info = db.Column(db.String(200), nullable=True) # Dòng này cũng phải có
+    # ==========================
+    
     status = db.Column(db.String(20), nullable=False, default='active') # active, revoked, expired
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    customer_info = db.Column(db.String(200), nullable=True) # Thêm thông tin khách hàng nếu cần
 
     def __repr__(self):
         return f'<License {self.license_key}>'
