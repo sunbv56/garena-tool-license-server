@@ -1,4 +1,4 @@
-# server.py (phiên bản cuối với dọn dẹp key không sử dụng)
+# server.py (phiên bản cuối với dọn dẹp key revoked)
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -74,7 +74,7 @@ def validate_license():
 # Endpoint để kiểm tra server có hoạt động không
 @app.route('/')
 def index():
-    return "License Server (v3 with Full Cleanup) is running."
+    return "License Server (v4 with Full Cleanup) is running."
 
 # ===================================================================
 # == CẬP NHẬT ENDPOINT DỌN DẸP DATABASE ==
@@ -82,7 +82,6 @@ def index():
 @app.route('/admin/cleanup_tasks/<secret_key>', methods=['POST'])
 def cleanup_tasks(secret_key):
     # Xác thực request
-    # Thay 'YOUR_SUPER_SECRET_KEY' bằng biến môi trường để an toàn hơn
     cron_secret = os.environ.get('CRON_SECRET_KEY', '')
     if secret_key != cron_secret:
         return "Unauthorized", 401
@@ -90,8 +89,9 @@ def cleanup_tasks(secret_key):
     # Khởi tạo bộ đếm cho báo cáo
     expired_deleted_count = 0
     unused_deleted_count = 0
+    revoked_deleted_count = 0 # << THÊM BỘ ĐẾM MỚI
 
-    # === NHIỆM VỤ 1: Xóa các key đã hết hạn quá 7 ngày ===
+    # === NHIỆM VỤ 1: Xóa các key đã hết hạn (expired) quá 7 ngày ===
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
     expired_keys_to_delete = License.query.filter(
         License.status == 'expired', 
@@ -103,18 +103,18 @@ def cleanup_tasks(secret_key):
         for key in expired_keys_to_delete:
             db.session.delete(key)
 
-    # === NHIỆM VỤ 2 (MỚI): Xóa các key không sử dụng (chưa kích hoạt) quá 7 ngày ===
-    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    # === NHIỆM VỤ 2: Xóa các key không sử dụng (chưa kích hoạt) quá 7 ngày ===
+    # (Sử dụng lại biến seven_days_ago từ nhiệm vụ 1)
     unused_keys_to_delete = License.query.filter(
-        License.hwid == None,  # Điều kiện: chưa được kích hoạt
-        License.created_at < seven_days_ago  # Điều kiện: đã tạo hơn 7 ngày trước
+        License.hwid == None,
+        License.created_at < seven_days_ago
     ).all()
 
     unused_deleted_count = len(unused_keys_to_delete)
     if unused_deleted_count > 0:
         for key in unused_keys_to_delete:
             db.session.delete(key)
-
+            
     # === NHIỆM VỤ 3 (MỚI): Xóa tất cả các key đã bị thu hồi (revoked) ===
     revoked_keys_to_delete = License.query.filter(License.status == 'revoked').all()
 
@@ -122,16 +122,17 @@ def cleanup_tasks(secret_key):
     if revoked_deleted_count > 0:
         for key in revoked_keys_to_delete:
             db.session.delete(key)
-    
-    # Chỉ commit vào database nếu có sự thay đổi
-    if expired_deleted_count > 0 or unused_deleted_count > 0:
+
+    # Chỉ commit vào database nếu có sự thay đổi từ bất kỳ nhiệm vụ nào
+    if expired_deleted_count > 0 or unused_deleted_count > 0 or revoked_deleted_count > 0:
         db.session.commit()
 
-    # Tạo thông báo kết quả
+    # Tạo thông báo kết quả chi tiết hơn
     message = (
         f"Dọn dẹp hoàn tất. "
         f"Đã xóa {expired_deleted_count} key hết hạn. "
-        f"Đã xóa {unused_deleted_count} key chưa sử dụng."
+        f"Đã xóa {unused_deleted_count} key chưa sử dụng. "
+        f"Đã xóa {revoked_deleted_count} key bị thu hồi."
     )
     
     print(f"Cron Job: {message}") # Ghi log trên server để bạn theo dõi
