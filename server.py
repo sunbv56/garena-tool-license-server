@@ -1,4 +1,4 @@
-# server.py (phiên bản có thời hạn)
+# server.py (phiên bản cuối với dọn dẹp key không sử dụng)
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -23,13 +23,9 @@ class License(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     license_key = db.Column(db.String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
     hwid = db.Column(db.String(100), unique=False, nullable=True)
-    
-    # === KIỂM TRA 2 DÒNG NÀY ===
     expires_at = db.Column(db.DateTime, nullable=True, default=None)
-    customer_info = db.Column(db.String(200), nullable=True) # Dòng này cũng phải có
-    # ==========================
-    
-    status = db.Column(db.String(20), nullable=False, default='active') # active, revoked, expired
+    customer_info = db.Column(db.String(200), nullable=True)
+    status = db.Column(db.String(20), nullable=False, default='active')
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def __repr__(self):
@@ -52,27 +48,21 @@ def validate_license():
     if not license_record:
         return jsonify({"status": "error", "message": "License key không tồn tại."}), 404
 
-    # === LOGIC KIỂM TRA MỚI ===
-    # 1. Kiểm tra trạng thái (ví dụ: bị thu hồi thủ công)
     if license_record.status == 'revoked':
         return jsonify({"status": "error", "message": "Key đã bị thu hồi."}), 403
     
-    # 2. Kiểm tra nếu key đã hết hạn và cập nhật status
     if license_record.expires_at and license_record.expires_at < current_time:
-        if license_record.status != 'expired': # Chỉ cập nhật DB nếu trạng thái chưa phải là expired
+        if license_record.status != 'expired':
             license_record.status = 'expired'
             db.session.commit()
         return jsonify({"status": "error", "message": "Key đã hết hạn sử dụng."}), 403
 
-    # Nếu key đang ở trạng thái expired nhưng bằng cách nào đó vẫn lọt qua (ví dụ: do cache), chặn lại
     if license_record.status == 'expired':
         return jsonify({"status": "error", "message": "Key đã hết hạn sử dụng."}), 403
 
-    # === LOGIC KÍCH HOẠT VÀ XÁC THỰC HWID (giữ nguyên) ===
     if license_record.hwid is None:
         license_record.hwid = hwid_from_client
         db.session.commit()
-        # Trả về thông tin ngày hết hạn cho client nếu có
         expires_msg = f"Hạn sử dụng đến: {license_record.expires_at.strftime('%Y-%m-%d %H:%M')}" if license_record.expires_at else "Bản quyền vĩnh viễn."
         return jsonify({"status": "success", "message": f"Kích hoạt thành công. {expires_msg}"}), 200
 
@@ -84,37 +74,62 @@ def validate_license():
 # Endpoint để kiểm tra server có hoạt động không
 @app.route('/')
 def index():
-    return "License Server (v2 with Expiry) is running."
+    return "License Server (v3 with Full Cleanup) is running."
 
-# --- Cron Job (Tùy chọn, để dọn dẹp database) ---
-# Đây là một endpoint bí mật mà bạn có thể dùng dịch vụ cron job để gọi định kỳ
-# Ví dụ: https://cron-job.org/
-@app.route('/admin/cleanup_expired_keys/<secret_key>', methods=['POST'])
-def cleanup_keys(secret_key):
-    # Thay 'YOUR_SUPER_SECRET_KEY' bằng một chuỗi ngẫu nhiên, dài
-    if secret_key != os.environ.get('CRON_SECRET_KEY', 'YOUR_SUPER_SECRET_KEY'):
+# ===================================================================
+# == CẬP NHẬT ENDPOINT DỌN DẸP DATABASE ==
+# ===================================================================
+@app.route('/admin/cleanup_tasks/<secret_key>', methods=['POST'])
+def cleanup_tasks(secret_key):
+    # Xác thực request
+    # Thay 'YOUR_SUPER_SECRET_KEY' bằng biến môi trường để an toàn hơn
+    cron_secret = os.environ.get('CRON_SECRET_KEY', 'YOUR_SUPER_SECRET_KEY')
+    if secret_key != cron_secret:
         return "Unauthorized", 401
 
-    # Xóa các key đã hết hạn hơn 180 ngày
+    # Khởi tạo bộ đếm cho báo cáo
+    expired_deleted_count = 0
+    unused_deleted_count = 0
+
+    # === NHIỆM VỤ 1: Xóa các key đã hết hạn quá 180 ngày ===
     six_months_ago = datetime.utcnow() - timedelta(days=180)
-    keys_to_delete = License.query.filter(License.status == 'expired', License.expires_at < six_months_ago).all()
+    expired_keys_to_delete = License.query.filter(
+        License.status == 'expired', 
+        License.expires_at < six_months_ago
+    ).all()
     
-    count = len(keys_to_delete)
-    if count > 0:
-        for key in keys_to_delete:
+    expired_deleted_count = len(expired_keys_to_delete)
+    if expired_deleted_count > 0:
+        for key in expired_keys_to_delete:
             db.session.delete(key)
+
+    # === NHIỆM VỤ 2 (MỚI): Xóa các key không sử dụng (chưa kích hoạt) quá 7 ngày ===
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    unused_keys_to_delete = License.query.filter(
+        License.hwid == None,  # Điều kiện: chưa được kích hoạt
+        License.created_at < seven_days_ago  # Điều kiện: đã tạo hơn 7 ngày trước
+    ).all()
+
+    unused_deleted_count = len(unused_keys_to_delete)
+    if unused_deleted_count > 0:
+        for key in unused_keys_to_delete:
+            db.session.delete(key)
+
+    # Chỉ commit vào database nếu có sự thay đổi
+    if expired_deleted_count > 0 or unused_deleted_count > 0:
         db.session.commit()
 
-    return jsonify({"status": "success", "message": f"Đã xóa {count} key hết hạn quá 180 ngày."})
+    # Tạo thông báo kết quả
+    message = (
+        f"Dọn dẹp hoàn tất. "
+        f"Đã xóa {expired_deleted_count} key hết hạn. "
+        f"Đã xóa {unused_deleted_count} key chưa sử dụng."
+    )
+    
+    print(f"Cron Job: {message}") # Ghi log trên server để bạn theo dõi
+    return jsonify({"status": "success", "message": message})
 
 
 # --- Khởi tạo/Cập nhật database ---
-# LƯU Ý QUAN TRỌNG: Khi bạn thêm cột mới, bạn cần migrate database.
-# Với Flask-Migrate thì sẽ chuyên nghiệp hơn, nhưng cách đơn giản nhất là
-# tạo lại database hoặc tự thêm cột bằng tay.
-# Với SQLite, chỉ cần chạy lại là nó tự thêm.
-# Với PostgreSQL trên Render, bạn cần kết nối và chạy lệnh SQL:
-# ALTER TABLE license ADD COLUMN expires_at TIMESTAMP WITHOUT TIME ZONE;
-# ALTER TABLE license ADD COLUMN customer_info VARCHAR(200);
 with app.app_context():
     db.create_all()
