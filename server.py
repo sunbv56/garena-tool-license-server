@@ -91,11 +91,11 @@ def cleanup_tasks(secret_key):
     expired_deleted_count = 0
     unused_deleted_count = 0
 
-    # === NHIỆM VỤ 1: Xóa các key đã hết hạn quá 180 ngày ===
-    six_months_ago = datetime.utcnow() - timedelta(days=180)
+    # === NHIỆM VỤ 1: Xóa các key đã hết hạn quá 7 ngày ===
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
     expired_keys_to_delete = License.query.filter(
         License.status == 'expired', 
-        License.expires_at < six_months_ago
+        License.expires_at < seven_days_ago
     ).all()
     
     expired_deleted_count = len(expired_keys_to_delete)
@@ -115,6 +115,14 @@ def cleanup_tasks(secret_key):
         for key in unused_keys_to_delete:
             db.session.delete(key)
 
+    # === NHIỆM VỤ 3 (MỚI): Xóa tất cả các key đã bị thu hồi (revoked) ===
+    revoked_keys_to_delete = License.query.filter(License.status == 'revoked').all()
+
+    revoked_deleted_count = len(revoked_keys_to_delete)
+    if revoked_deleted_count > 0:
+        for key in revoked_keys_to_delete:
+            db.session.delete(key)
+    
     # Chỉ commit vào database nếu có sự thay đổi
     if expired_deleted_count > 0 or unused_deleted_count > 0:
         db.session.commit()
