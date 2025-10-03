@@ -83,7 +83,7 @@ def index():
 def cleanup_tasks(secret_key):
     # Xác thực request
     # Thay 'YOUR_SUPER_SECRET_KEY' bằng biến môi trường để an toàn hơn
-    cron_secret = os.environ.get('CRON_SECRET_KEY', 'YOUR_SUPER_SECRET_KEY')
+    cron_secret = os.environ.get('CRON_SECRET_KEY', 'MySecretCleanupKeyForGarenaTool_2024_xyz!@#')
     if secret_key != cron_secret:
         return "Unauthorized", 401
 
